@@ -96,9 +96,10 @@ The Rust program sits in the middle and performs **real-time frame deduplication
 - A frame is considered "different" if it exceeds a similarity threshold
 - **Keep**: all frames that differ from the previous frame ("moving frames")
 - **Keep**: any frame within 0.5s (approximately 7-8 frames at 15 fps) before or after a moving frame
+- **Keep**: any frame within 2s (approximately 30 frames at 15 fps) before or after a marker frame
 - **Discard**: all other still/duplicate frames
 
-This produces a final video shorter than the actual recorded duration, containing only the interesting parts with brief context around transitions. The Rust program must buffer a small window of frames to implement the 0.5s look-ahead/look-behind logic and stream results in real time.
+This produces a final video shorter than the actual recorded duration, containing only the interesting parts with brief context around transitions. The Rust program must buffer a small window of frames to implement the look-ahead/look-behind logic and stream results in real time. The look-behind buffer must be large enough to cover the 2s marker window.
 
 ## Code Structure
 
@@ -116,7 +117,7 @@ The following assumptions were made during implementation where the PRD was ambi
 - **Frame comparison threshold**: Average absolute byte difference per byte > 0.5 is considered "different". This is a conservative threshold that detects meaningful visual changes while ignoring compression artifacts or minor rendering differences.
 - **SIMD frame comparison**: Uses `std::simd` portable SIMD (nightly) with `Simd<u8, 32>` (256-bit AVX2 registers). The binary is compiled with `-C target-feature=+avx2` globally and requires an AVX2-capable CPU.
 - **Marker frame text rendering**: Marker frames are rendered via `resvg` — an SVG with the title (72px bold, centered) and description (36px, centered) is built dynamically with word wrapping, then rasterized to raw RGB pixels. System fonts are loaded via `fontdb`. Falls back to a solid white frame if SVG rendering fails.
-- **Recording termination**: When `stop_recording` is called, the capture ffmpeg process is killed after the pipeline loop exits. Any frames still buffered in the look-behind window at the end of recording are discarded (they have no adjacent moving frame to justify keeping them).
+- **Recording termination**: When `stop_recording` is called, the capture ffmpeg process is killed after the pipeline loop exits. Any frames still buffered in the look-behind window at the end of recording are discarded unless they fall within 2s of a marker frame, in which case they are kept.
 - **Keyboard type delay**: A 12ms inter-character delay is used with `xdotool type` to avoid dropped characters.
 - **Logging**: Tracing output goes to stderr (not stdout, which is used for MCP stdio transport).
 - **X11 DISPLAY**: Defaults to `:0` if the `DISPLAY` environment variable is not set.

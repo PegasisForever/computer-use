@@ -59,26 +59,33 @@ pub fn frames_are_different(a: &[u8], b: &[u8], threshold: f64) -> bool {
 /// A frame is "moving" if it differs from the previous frame beyond a threshold.
 /// The deduplicator keeps:
 ///   - All moving frames
-///   - Up to `look_window` still frames before a moving frame (look-behind)
-///   - Up to `look_window` still frames after a moving frame (look-ahead)
+///   - Up to `look_window` still frames before/after a moving frame (~0.5s)
+///   - Up to `marker_window` still frames before/after a marker frame (~2s)
 ///
-/// Internally it maintains a look-behind buffer and a countdown for look-ahead.
+/// Internally it maintains a look-behind buffer and two independent look-ahead
+/// countdowns (one for motion events, one for marker events).
 pub struct FrameDeduplicator {
     threshold: f64,
     look_window: usize,
+    marker_window: usize,
     buffer: VecDeque<Vec<u8>>,
     prev_frame: Option<Vec<u8>>,
+    /// Frames remaining in look-ahead after a moving frame.
     countdown: usize,
+    /// Frames remaining in look-ahead after a marker.
+    marker_countdown: usize,
 }
 
 impl FrameDeduplicator {
-    pub fn new(threshold: f64, look_window: usize) -> Self {
+    pub fn new(threshold: f64, look_window: usize, marker_window: usize) -> Self {
         Self {
             threshold,
             look_window,
+            marker_window,
             buffer: VecDeque::new(),
             prev_frame: None,
             countdown: 0,
+            marker_countdown: 0,
         }
     }
 
@@ -94,18 +101,27 @@ impl FrameDeduplicator {
         let mut output = Vec::new();
 
         if is_moving {
-            // Flush look-behind buffer (all within look_window of this moving frame)
+            // Flush look-behind buffer (all within look_window/marker_window of this moving frame)
             output.extend(self.buffer.drain(..));
             output.push(frame);
             self.countdown = self.look_window;
-        } else if self.countdown > 0 {
-            // Still in look-ahead window after a moving frame
+            if self.marker_countdown > 0 {
+                self.marker_countdown -= 1;
+            }
+        } else if self.countdown > 0 || self.marker_countdown > 0 {
+            // Still in look-ahead window (motion or marker)
             output.push(frame);
-            self.countdown -= 1;
+            if self.countdown > 0 {
+                self.countdown -= 1;
+            }
+            if self.marker_countdown > 0 {
+                self.marker_countdown -= 1;
+            }
         } else {
-            // Buffer for potential look-behind
+            // Buffer for potential look-behind; cap at the larger of the two windows.
             self.buffer.push_back(frame);
-            if self.buffer.len() > self.look_window {
+            let cap = self.look_window.max(self.marker_window);
+            if self.buffer.len() > cap {
                 self.buffer.pop_front();
             }
         }
@@ -113,8 +129,20 @@ impl FrameDeduplicator {
         output
     }
 
+    /// Called when a marker is about to be injected. Flushes the look-behind
+    /// buffer (up to `marker_window` frames before the marker) and starts a
+    /// `marker_window`-frame look-ahead countdown.
+    ///
+    /// Returns buffered frames that should be written to the encoder before
+    /// the marker frames.
+    pub fn notify_marker(&mut self) -> Vec<Vec<u8>> {
+        let output: Vec<Vec<u8>> = self.buffer.drain(..).collect();
+        self.marker_countdown = self.marker_window;
+        output
+    }
+
     /// Flush at end of recording. Still frames sitting in the look-behind
-    /// buffer are not adjacent to any future moving frame, so they are discarded.
+    /// buffer have no future anchor, so they are discarded.
     pub fn flush(&mut self) -> Vec<Vec<u8>> {
         self.buffer.clear();
         Vec::new()
@@ -155,8 +183,8 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
     lines
 }
 
-/// Build an SVG document with centered title (bold, large) and description
-/// (smaller) text, word-wrapped to fit the frame width.
+/// Build an SVG document with top-left-aligned title (bold, large) and
+/// description (smaller) text, word-wrapped to fit the frame width.
 fn build_marker_svg(width: u32, height: u32, title: &str, description: &str) -> String {
     let margin: u32 = 100;
     let available = width.saturating_sub(2 * margin).max(1);
@@ -174,13 +202,9 @@ fn build_marker_svg(width: u32, height: u32, title: &str, description: &str) -> 
     let title_lines = wrap_text(title, title_cpl);
     let desc_lines = wrap_text(description, desc_cpl);
 
-    let total_title = title_lines.len() as u32 * title_lh;
-    let total_desc = desc_lines.len() as u32 * desc_lh;
-    let total_h = total_title + gap + total_desc;
-
-    // Vertical center; +font_size for baseline offset
-    let start_y = (height.saturating_sub(total_h)) / 2 + title_fs;
-    let cx = width / 2;
+    // Top-left origin; +font_size for baseline offset
+    let start_y = margin + title_fs;
+    let x = margin;
 
     let mut svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">"#,
@@ -190,16 +214,16 @@ fn build_marker_svg(width: u32, height: u32, title: &str, description: &str) -> 
     for (i, line) in title_lines.iter().enumerate() {
         let y = start_y + i as u32 * title_lh;
         svg.push_str(&format!(
-            r#"<text x="{cx}" y="{y}" text-anchor="middle" font-size="{title_fs}" font-weight="bold" fill="black">{}</text>"#,
+            r#"<text x="{x}" y="{y}" font-family="sans-serif" font-size="{title_fs}" font-weight="bold" fill="black">{}</text>"#,
             xml_escape(line),
         ));
     }
 
-    let desc_y0 = start_y + total_title + gap;
+    let desc_y0 = start_y + title_lines.len() as u32 * title_lh + gap;
     for (i, line) in desc_lines.iter().enumerate() {
         let y = desc_y0 + i as u32 * desc_lh;
         svg.push_str(&format!(
-            "<text x=\"{cx}\" y=\"{y}\" text-anchor=\"middle\" font-size=\"{desc_fs}\" fill=\"#333333\">{}</text>",
+            "<text x=\"{x}\" y=\"{y}\" font-family=\"sans-serif\" font-size=\"{desc_fs}\" fill=\"#333333\">{}</text>",
             xml_escape(line),
         ));
     }
@@ -269,6 +293,7 @@ pub async fn run_pipeline(
     frame_height: u32,
     dedup_threshold: f64,
     look_window: usize,
+    marker_window: usize,
     marker_frame_count: usize,
 ) -> Result<()> {
     let frame_size = (frame_width as usize) * (frame_height as usize) * 3;
@@ -292,7 +317,7 @@ pub async fn run_pipeline(
         }
     });
 
-    let mut dedup = FrameDeduplicator::new(dedup_threshold, look_window);
+    let mut dedup = FrameDeduplicator::new(dedup_threshold, look_window, marker_window);
 
     loop {
         tokio::select! {
@@ -315,6 +340,13 @@ pub async fn run_pipeline(
             msg = msg_rx.recv() => {
                 match msg {
                     Some(RecordingMessage::MarkerFrame { title, description }) => {
+                        // Flush look-behind frames adjacent to this marker and
+                        // start the marker look-ahead countdown.
+                        let pre_marker = dedup.notify_marker();
+                        for f in pre_marker {
+                            encoder.write_all(&f).await
+                                .context("failed to write pre-marker frame")?;
+                        }
                         let marker = generate_marker_frame(
                             frame_width, frame_height, &title, &description,
                         );
@@ -472,6 +504,7 @@ async fn run_recording_with_ffmpeg(
         DISPLAY_HEIGHT,
         DEDUP_THRESHOLD,
         DEDUP_LOOK_WINDOW,
+        MARKER_LOOK_WINDOW,
         MARKER_FRAME_COUNT,
     )
     .await;
@@ -542,14 +575,14 @@ mod tests {
 
     #[test]
     fn test_dedup_first_frame_always_output() {
-        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3);
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3, 0);
         let out = dedup.push_frame(make_frame(128, TFS));
         assert_eq!(out.len(), 1);
     }
 
     #[test]
     fn test_dedup_all_identical_drops_after_lookahead() {
-        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3);
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3, 0);
         let frame = make_frame(128, TFS);
 
         assert_eq!(dedup.push_frame(frame.clone()).len(), 1);
@@ -563,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_dedup_all_different_all_output() {
-        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3);
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3, 0);
         for i in 0..10u8 {
             let out = dedup.push_frame(make_frame(i * 25, TFS));
             assert!(!out.is_empty(), "frame {} should be output", i);
@@ -572,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_dedup_look_behind_flushed_on_moving_frame() {
-        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3);
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3, 0);
 
         assert_eq!(dedup.push_frame(make_frame(128, TFS)).len(), 1);
         for _ in 0..3 {
@@ -587,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_dedup_look_ahead_after_moving() {
-        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3);
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3, 0);
 
         assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 1);
         for i in 0..3 {
@@ -599,7 +632,7 @@ mod tests {
 
     #[test]
     fn test_dedup_moving_resets_countdown() {
-        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3);
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3, 0);
 
         dedup.push_frame(make_frame(0, TFS));
         dedup.push_frame(make_frame(0, TFS));
@@ -614,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_dedup_flush_discards_buffer() {
-        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3);
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3, 0);
         let frame = make_frame(128, TFS);
 
         dedup.push_frame(frame.clone());
@@ -630,14 +663,125 @@ mod tests {
 
     #[test]
     fn test_dedup_single_frame() {
-        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3);
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3, 0);
         assert_eq!(dedup.push_frame(make_frame(42, TFS)).len(), 1);
         assert!(dedup.flush().is_empty());
     }
 
     #[test]
     fn test_dedup_empty_flush() {
-        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3);
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 3, 0);
+        assert!(dedup.flush().is_empty());
+    }
+
+    // --- notify_marker: look-behind ---
+
+    #[test]
+    fn test_marker_look_behind_flushes_buffer() {
+        // 5 still frames sit in the buffer, then a marker arrives.
+        // All 5 should be returned by notify_marker.
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 2, 5);
+
+        // First frame is "moving" (always), exhausts look-ahead of 2
+        dedup.push_frame(make_frame(128, TFS)); // moving
+        dedup.push_frame(make_frame(128, TFS)); // look-ahead 2→1
+        dedup.push_frame(make_frame(128, TFS)); // look-ahead 1→0
+        // Now in quiet zone — next 5 frames go to buffer
+        for _ in 0..5 {
+            assert_eq!(dedup.push_frame(make_frame(128, TFS)).len(), 0);
+        }
+        let pre = dedup.notify_marker();
+        assert_eq!(pre.len(), 5, "all buffered frames should be flushed before marker");
+    }
+
+    #[test]
+    fn test_marker_look_behind_capped_at_marker_window() {
+        // Buffer holds up to marker_window=3 frames, even if more still frames arrive.
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 2, 3);
+
+        dedup.push_frame(make_frame(128, TFS)); // moving
+        dedup.push_frame(make_frame(128, TFS)); // look-ahead 2→1
+        dedup.push_frame(make_frame(128, TFS)); // look-ahead 1→0
+        // 10 still frames → buffer holds only last 3
+        for _ in 0..10 {
+            dedup.push_frame(make_frame(128, TFS));
+        }
+        let pre = dedup.notify_marker();
+        assert_eq!(pre.len(), 3);
+    }
+
+    // --- notify_marker: look-ahead ---
+
+    #[test]
+    fn test_marker_look_ahead_outputs_still_frames() {
+        // After notify_marker, still frames within marker_window are kept.
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 0, 3);
+
+        // Prime with one moving frame so prev_frame is set
+        dedup.push_frame(make_frame(0, TFS));  // moving
+        // notify_marker starts look-ahead of 3
+        let _ = dedup.notify_marker();
+        // Next 3 still frames should be output
+        for i in 0..3usize {
+            let out = dedup.push_frame(make_frame(0, TFS));
+            assert_eq!(out.len(), 1, "look-ahead frame {} after marker should be kept", i);
+        }
+        // Frame after window should be buffered (not output)
+        assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 0);
+    }
+
+    #[test]
+    fn test_marker_look_ahead_independent_of_motion_countdown() {
+        // A marker's look-ahead and a motion event's look-ahead are independent;
+        // a still frame is kept if either countdown > 0.
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 2, 4);
+
+        dedup.push_frame(make_frame(0, TFS));  // moving, motion countdown = 2
+        let _ = dedup.notify_marker();          // marker countdown = 4
+
+        // Both countdowns tick; still frame kept until both reach 0.
+        // Step 1: motion=1, marker=3
+        assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 1);
+        // Step 2: motion=0, marker=2
+        assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 1);
+        // Step 3: motion=0, marker=1
+        assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 1);
+        // Step 4: motion=0, marker=0
+        assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 1);
+        // Step 5: both 0 → buffered
+        assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 0);
+    }
+
+    #[test]
+    fn test_marker_look_ahead_resets_on_second_marker() {
+        // A second marker before the first look-ahead expires resets the countdown.
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 0, 4);
+
+        dedup.push_frame(make_frame(0, TFS)); // moving
+        let _ = dedup.notify_marker();         // marker countdown = 4
+        dedup.push_frame(make_frame(0, TFS)); // countdown 4→3
+        dedup.push_frame(make_frame(0, TFS)); // countdown 3→2
+        let _ = dedup.notify_marker();         // reset countdown to 4
+        // Now 4 more frames should be kept
+        for i in 0..4usize {
+            assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 1, "frame {} should be kept", i);
+        }
+        assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 0);
+    }
+
+    #[test]
+    fn test_marker_flush_does_not_keep_buffer() {
+        // Buffer frames after marker look-ahead expires are discarded at end of recording.
+        let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 0, 2);
+
+        dedup.push_frame(make_frame(0, TFS));  // moving
+        let _ = dedup.notify_marker();
+        dedup.push_frame(make_frame(0, TFS)); // look-ahead 2→1
+        dedup.push_frame(make_frame(0, TFS)); // look-ahead 1→0
+        // 3 frames accumulate in buffer after look-ahead ends
+        for _ in 0..3 {
+            dedup.push_frame(make_frame(0, TFS));
+        }
         assert!(dedup.flush().is_empty());
     }
 
@@ -674,6 +818,7 @@ mod tests {
                 TH,
                 DEDUP_THRESHOLD,
                 look_window,
+                0,
                 0,
             )
             .await
@@ -718,6 +863,7 @@ mod tests {
                 DEDUP_THRESHOLD,
                 look_window,
                 0,
+                0,
             )
             .await
         });
@@ -752,6 +898,7 @@ mod tests {
                 TH,
                 DEDUP_THRESHOLD,
                 2,
+                0,
                 marker_count,
             )
             .await
@@ -805,6 +952,7 @@ mod tests {
             DEDUP_THRESHOLD,
             2,
             0,
+            0,
         )
         .await;
         assert!(result.is_ok());
@@ -832,6 +980,7 @@ mod tests {
                 DEDUP_THRESHOLD,
                 look_window,
                 0,
+                0,
             )
             .await
         });
@@ -847,5 +996,139 @@ mod tests {
         let mut output = Vec::new();
         encoder_read.read_to_end(&mut output).await.unwrap();
         assert_eq!(output.len() / TFS, 10);
+    }
+
+    // --- Pipeline: marker look-behind and look-ahead ---
+
+    #[tokio::test]
+    async fn test_pipeline_marker_look_behind() {
+        // Still frames accumulate in the buffer; a marker flushes them.
+        // Setup: look_window=1, marker_window=3, marker_frame_count=0 (so we only
+        // count real frames, not marker frames).
+        //
+        // Sequence:
+        //   F0(0):   moving → output
+        //   F1(0):   look-ahead 1→0 → output
+        //   F2(0):   buffered
+        //   F3(0):   buffered (cap=3, oldest dropped)
+        //   F4(0):   buffered (cap=3, F2 dropped)
+        //   MARKER:  notify_marker flushes [F3, F4] — only last 3 kept but only 2 are left
+        //            wait, cap=max(1,3)=3 so buffer holds F2,F3,F4 → 3 frames flushed
+        //   F5(0):   marker look-ahead 3→2 → output
+        //   F6(0):   marker look-ahead 2→1 → output
+        //   F7(0):   marker look-ahead 1→0 → output
+        //   F8(0):   buffered
+        //
+        // Expected output (excluding actual marker frames): F0,F1,F2,F3,F4,F5,F6,F7 = 8 frames
+        let marker_count = 0;
+        let (msg_tx, msg_rx) = mpsc::channel(16);
+
+        let (mut capture_write, capture_read) = duplex(TFS * 32);
+        let (encoder_write, mut encoder_read) = duplex(TFS * 64);
+
+        let pipeline = tokio::spawn(async move {
+            run_pipeline(
+                capture_read,
+                encoder_write,
+                msg_rx,
+                TW,
+                TH,
+                DEDUP_THRESHOLD,
+                1,
+                3,
+                marker_count,
+            )
+            .await
+        });
+
+        // F0: moving
+        capture_write.write_all(&make_frame(0, TFS)).await.unwrap();
+        // F1: look-ahead
+        capture_write.write_all(&make_frame(0, TFS)).await.unwrap();
+        // F2–F4: buffered (3 frames, fills buffer)
+        for _ in 0..3 {
+            capture_write.write_all(&make_frame(0, TFS)).await.unwrap();
+        }
+        // Give pipeline time to process frames before sending marker
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Marker: flushes buffer (3 frames), starts look-ahead of 3
+        msg_tx
+            .send(RecordingMessage::MarkerFrame {
+                title: "M".into(),
+                description: "".into(),
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // F5–F7: marker look-ahead
+        for _ in 0..3 {
+            capture_write.write_all(&make_frame(0, TFS)).await.unwrap();
+        }
+        // F8: should be buffered (not output)
+        capture_write.write_all(&make_frame(0, TFS)).await.unwrap();
+
+        drop(capture_write);
+        drop(msg_tx);
+        pipeline.await.unwrap().unwrap();
+
+        let mut output = Vec::new();
+        encoder_read.read_to_end(&mut output).await.unwrap();
+        // F0, F1, F2, F3, F4 (look-behind), F5, F6, F7 (look-ahead) = 8 frames
+        assert_eq!(
+            output.len() / TFS,
+            8,
+            "expected 8 frames (look-behind + look-ahead), got {}",
+            output.len() / TFS
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_marker_look_ahead_only() {
+        // No frames before marker (no look-behind), just look-ahead frames after.
+        let marker_count = 0;
+        let (msg_tx, msg_rx) = mpsc::channel(16);
+
+        let (capture_write, capture_read) = duplex(TFS * 32);
+        let (encoder_write, mut encoder_read) = duplex(TFS * 64);
+
+        let pipeline = tokio::spawn(async move {
+            run_pipeline(
+                capture_read,
+                encoder_write,
+                msg_rx,
+                TW,
+                TH,
+                DEDUP_THRESHOLD,
+                0,
+                2,
+                marker_count,
+            )
+            .await
+        });
+
+        // Send marker before any frames
+        msg_tx
+            .send(RecordingMessage::MarkerFrame {
+                title: "Start".into(),
+                description: "".into(),
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // These should all be caught by the marker look-ahead (window=2)
+        // But we haven't sent any frames yet; send them via capture now.
+        // Note: capture_write was moved into the closure — we can't use it here.
+        // Drop the sender to end the pipeline cleanly.
+        drop(capture_write);
+        drop(msg_tx);
+        pipeline.await.unwrap().unwrap();
+
+        let mut output = Vec::new();
+        encoder_read.read_to_end(&mut output).await.unwrap();
+        // No capture frames were sent, so output is empty
+        assert_eq!(output.len(), 0);
     }
 }

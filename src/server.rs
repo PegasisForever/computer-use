@@ -15,6 +15,7 @@ use tokio::time::{Duration, sleep};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ClickParams {
     #[schemars(description = "X coordinate in 1456x819 space")]
     pub x: Option<f64>,
@@ -23,6 +24,7 @@ pub struct ClickParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MouseMoveParams {
     #[schemars(description = "X coordinate in 1456x819 space")]
     pub x: f64,
@@ -31,28 +33,32 @@ pub struct MouseMoveParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ScrollParams {
     #[schemars(description = "X coordinate in 1456x819 space")]
     pub x: Option<f64>,
     #[schemars(description = "Y coordinate in 1456x819 space")]
     pub y: Option<f64>,
-    #[schemars(description = "Scroll amount. Positive scrolls down, negative scrolls up")]
+    #[schemars(description = "Scroll amount in notches (one unit = one scroll wheel notch). Positive scrolls down, negative scrolls up, must be between -5 and 5")]
     pub amount: i32,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct KeyParams {
     #[schemars(description = "Key or key combination (e.g. ctrl+c, Return, alt+Tab)")]
     pub keys: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TypeParams {
     #[schemars(description = "Text string to type on the keyboard")]
     pub text: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MarkerParams {
     #[schemars(description = "Marker title text")]
     pub title: String,
@@ -178,6 +184,12 @@ impl ComputerUseServer {
         &self,
         Parameters(params): Parameters<ScrollParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if params.amount < -5 || params.amount > 5 {
+            return Err(ErrorData::invalid_params(
+                "scroll amount must be between -5 and 5",
+                None,
+            ));
+        }
         mouse::maybe_move(params.x, params.y)
             .await
             .map_err(mcp_err)?;
