@@ -108,7 +108,7 @@ All magic numbers and tunable constants (resolution, scaled resolution, FPS, wai
 
 The following assumptions were made during implementation where the PRD was ambiguous:
 
-- **Screenshot tool**: `scrot` is used to capture the screen. It must be installed on the system.
+- **Screenshot tool**: `ffmpeg` x11grab is used to capture a single frame as PNG to stdout. No temp files or extra CLI dependencies beyond ffmpeg.
 - **Mouse/keyboard input**: `xdotool` is used for all mouse and keyboard operations. It must be installed.
 - **Resolution check**: `xrandr` is used to verify the display resolution on startup.
 - **Smooth mouse movement**: Uses quadratic ease-in-out interpolation over 20 steps across 300ms. These values are configurable in `config.rs`.

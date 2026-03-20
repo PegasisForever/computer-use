@@ -7,7 +7,7 @@ Communicates over stdio using the [MCP protocol](https://modelcontextprotocol.io
 ## Requirements
 
 - Linux with X11 at 1920x1080 resolution
-- `xdotool`, `scrot`, `ffmpeg` installed
+- `xdotool` and `ffmpeg` installed
 - CPU with AVX2 support
 
 ## Tools
@@ -34,10 +34,10 @@ All coordinates are in 1456x819 space (scaled to 1920x1080 internally).
 1. Download the latest release binary:
 
 ```bash
-curl -L -o computer-use \
+mkdir -p ~/.local/bin
+curl -L -o ~/.local/bin/computer-use \
   https://github.com/PegasisForever/computer-use/releases/latest/download/computer-use-linux-x86_64
-chmod +x computer-use
-sudo mv computer-use /usr/local/bin/
+chmod +x ~/.local/bin/computer-use
 ```
 
 2. Add the MCP server to your Claude Code settings (`~/.claude/settings.json`):
@@ -46,7 +46,7 @@ sudo mv computer-use /usr/local/bin/
 {
   "mcpServers": {
     "computer-use": {
-      "command": "/usr/local/bin/computer-use"
+      "command": "/home/YOUR_USER/.local/bin/computer-use"
     }
   }
 }

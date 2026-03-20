@@ -5,24 +5,43 @@ use image::ImageFormat;
 use std::io::Cursor;
 use tokio::process::Command;
 
-/// Capture the screen at native resolution, resize to scaled resolution,
-/// and return as a base64-encoded PNG string.
+/// Capture the screen at native resolution using ffmpeg, resize to scaled
+/// resolution, and return as a base64-encoded PNG string.
+///
+/// Uses ffmpeg's x11grab to capture a single frame as PNG to stdout,
+/// avoiding any temp files or extra CLI dependencies beyond ffmpeg.
 pub async fn capture_screenshot() -> Result<String> {
-    let tmp_path = format!("/tmp/screenshot_{}.png", rand::random::<u64>());
+    let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
 
-    let status = Command::new("scrot")
-        .arg("-o")
-        .arg(&tmp_path)
-        .status()
+    let output = Command::new("ffmpeg")
+        .args([
+            "-f",
+            "x11grab",
+            "-video_size",
+            &format!("{}x{}", DISPLAY_WIDTH, DISPLAY_HEIGHT),
+            "-i",
+            &display,
+            "-frames:v",
+            "1",
+            "-f",
+            "image2",
+            "-c:v",
+            "png",
+            "pipe:1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .output()
         .await
-        .context("failed to run scrot")?;
+        .context("failed to run ffmpeg for screenshot")?;
 
-    if !status.success() {
-        anyhow::bail!("scrot exited with status: {}", status);
+    if !output.status.success() {
+        anyhow::bail!("ffmpeg screenshot exited with status: {}", output.status);
     }
 
-    let img = image::open(&tmp_path).context("failed to open screenshot")?;
-    let _ = tokio::fs::remove_file(&tmp_path).await;
+    let img = image::load_from_memory(&output.stdout)
+        .context("failed to decode screenshot from ffmpeg")?;
 
     let resized = img.resize_exact(
         SCALED_WIDTH,
