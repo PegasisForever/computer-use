@@ -40,7 +40,7 @@ curl -L -o ~/.local/bin/computer-use \
 chmod +x ~/.local/bin/computer-use
 ```
 
-2. Add the MCP server to your Claude Code settings (`~/.claude/settings.json`):
+2. Add the MCP server to your Claude Code settings (`~/.claude/settings.json`) (note: you need to use full path here):
 
 ```json
 {
