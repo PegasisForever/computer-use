@@ -1,13 +1,17 @@
 #![feature(portable_simd)]
 
+mod auth;
 mod cli;
 mod config;
+mod filter;
 mod guard;
+mod http;
 mod keyboard;
 mod mouse;
 mod recording;
 mod screenshot;
 mod server;
+mod tls;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -99,9 +103,16 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)?;
     }
 
-    let server = ComputerUseServer::new();
-    let service = server.serve(stdio()).await?;
-    service.waiting().await?;
+    match config.transport {
+        Transport::Stdio => {
+            let server = ComputerUseServer::filtered(&config)?;
+            let service = server.serve(stdio()).await?;
+            service.waiting().await?;
+        }
+        Transport::Http => {
+            http::serve(config).await?;
+        }
+    }
 
     Ok(())
 }

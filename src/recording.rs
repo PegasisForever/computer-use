@@ -206,9 +206,8 @@ fn build_marker_svg(width: u32, height: u32, title: &str, description: &str) -> 
     let start_y = margin + title_fs;
     let x = margin;
 
-    let mut svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">"#,
-    );
+    let mut svg =
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">"#,);
     svg.push_str(r#"<rect width="100%" height="100%" fill="white"/>"#);
 
     for (i, line) in title_lines.iter().enumerate() {
@@ -235,6 +234,9 @@ fn build_marker_svg(width: u32, height: u32, title: &str, description: &str) -> 
 /// Render a marker frame: white 1080p frame with title and description text.
 /// Uses resvg to rasterize an SVG with the text laid out.
 /// Returns raw RGB24 bytes (width × height × 3).
+// Upstream clippy: `chunks_exact(4)` is clearer here than `as_chunks` for the
+// manual RGB24 flattening; lint left in place.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn generate_marker_frame(width: u32, height: u32, title: &str, description: &str) -> Vec<u8> {
     let rgb_size = (width * height * 3) as usize;
     let white_fallback = || vec![255u8; rgb_size];
@@ -255,7 +257,11 @@ pub fn generate_marker_frame(width: u32, height: u32, title: &str, description: 
     };
 
     pixmap.fill(resvg::tiny_skia::Color::WHITE);
-    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::default(),
+        &mut pixmap.as_mut(),
+    );
 
     // Convert premultiplied RGBA → RGB24.
     // Background is opaque white so every pixel has alpha=255;
@@ -285,6 +291,10 @@ pub enum RecordingMessage {
 /// signals via `msg_rx`.
 ///
 /// Generic over AsyncRead/AsyncWrite so tests can substitute in-memory streams.
+// Upstream clippy: 8 pipeline parameters are inherent to the generic pipeline
+// design, and the reader loop reads naturally as `loop` + `match`. Left in
+// place (pre-existing).
+#[allow(clippy::too_many_arguments, clippy::while_let_loop)]
 pub async fn run_pipeline(
     capture: impl AsyncRead + Unpin + Send + 'static,
     mut encoder: impl AsyncWrite + Unpin + Send,
@@ -419,17 +429,12 @@ impl RecordingHandle {
 
 /// Start a new screen recording. Returns a handle for stopping / adding markers.
 pub fn start_recording() -> Result<RecordingHandle> {
-    let output_path = format!(
-        "{}/recording_{}.mp4",
-        RECORDING_DIR,
-        rand::random::<u64>()
-    );
+    let output_path = format!("{}/recording_{}.mp4", RECORDING_DIR, rand::random::<u64>());
     let output_path_clone = output_path.clone();
     let (msg_tx, msg_rx) = mpsc::channel(32);
 
-    let join_handle = tokio::spawn(async move {
-        run_recording_with_ffmpeg(&output_path_clone, msg_rx).await
-    });
+    let join_handle =
+        tokio::spawn(async move { run_recording_with_ffmpeg(&output_path_clone, msg_rx).await });
 
     Ok(RecordingHandle {
         output_path,
@@ -549,6 +554,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn test_slightly_different_frames_below_threshold() {
         let a = make_frame(128, 10000);
         let mut b = a.clone();
@@ -691,7 +697,11 @@ mod tests {
             assert_eq!(dedup.push_frame(make_frame(128, TFS)).len(), 0);
         }
         let pre = dedup.notify_marker();
-        assert_eq!(pre.len(), 5, "all buffered frames should be flushed before marker");
+        assert_eq!(
+            pre.len(),
+            5,
+            "all buffered frames should be flushed before marker"
+        );
     }
 
     #[test]
@@ -718,13 +728,18 @@ mod tests {
         let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 0, 3);
 
         // Prime with one moving frame so prev_frame is set
-        dedup.push_frame(make_frame(0, TFS));  // moving
+        dedup.push_frame(make_frame(0, TFS)); // moving
         // notify_marker starts look-ahead of 3
         let _ = dedup.notify_marker();
         // Next 3 still frames should be output
         for i in 0..3usize {
             let out = dedup.push_frame(make_frame(0, TFS));
-            assert_eq!(out.len(), 1, "look-ahead frame {} after marker should be kept", i);
+            assert_eq!(
+                out.len(),
+                1,
+                "look-ahead frame {} after marker should be kept",
+                i
+            );
         }
         // Frame after window should be buffered (not output)
         assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 0);
@@ -736,8 +751,8 @@ mod tests {
         // a still frame is kept if either countdown > 0.
         let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 2, 4);
 
-        dedup.push_frame(make_frame(0, TFS));  // moving, motion countdown = 2
-        let _ = dedup.notify_marker();          // marker countdown = 4
+        dedup.push_frame(make_frame(0, TFS)); // moving, motion countdown = 2
+        let _ = dedup.notify_marker(); // marker countdown = 4
 
         // Both countdowns tick; still frame kept until both reach 0.
         // Step 1: motion=1, marker=3
@@ -758,13 +773,18 @@ mod tests {
         let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 0, 4);
 
         dedup.push_frame(make_frame(0, TFS)); // moving
-        let _ = dedup.notify_marker();         // marker countdown = 4
+        let _ = dedup.notify_marker(); // marker countdown = 4
         dedup.push_frame(make_frame(0, TFS)); // countdown 4→3
         dedup.push_frame(make_frame(0, TFS)); // countdown 3→2
-        let _ = dedup.notify_marker();         // reset countdown to 4
+        let _ = dedup.notify_marker(); // reset countdown to 4
         // Now 4 more frames should be kept
         for i in 0..4usize {
-            assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 1, "frame {} should be kept", i);
+            assert_eq!(
+                dedup.push_frame(make_frame(0, TFS)).len(),
+                1,
+                "frame {} should be kept",
+                i
+            );
         }
         assert_eq!(dedup.push_frame(make_frame(0, TFS)).len(), 0);
     }
@@ -774,7 +794,7 @@ mod tests {
         // Buffer frames after marker look-ahead expires are discarded at end of recording.
         let mut dedup = FrameDeduplicator::new(DEDUP_THRESHOLD, 0, 2);
 
-        dedup.push_frame(make_frame(0, TFS));  // moving
+        dedup.push_frame(make_frame(0, TFS)); // moving
         let _ = dedup.notify_marker();
         dedup.push_frame(make_frame(0, TFS)); // look-ahead 2→1
         dedup.push_frame(make_frame(0, TFS)); // look-ahead 1→0
@@ -831,7 +851,10 @@ mod tests {
         // F4(  0): moving → flush buffer(F3) + F4, countdown=2
         // F5(  0): still, countdown=2→1
         for _ in 0..4 {
-            capture_write.write_all(&make_frame(128, TFS)).await.unwrap();
+            capture_write
+                .write_all(&make_frame(128, TFS))
+                .await
+                .unwrap();
         }
         for _ in 0..2 {
             capture_write.write_all(&make_frame(0, TFS)).await.unwrap();
@@ -868,9 +891,15 @@ mod tests {
             .await
         });
 
-        capture_write.write_all(&make_frame(128, TFS)).await.unwrap();
+        capture_write
+            .write_all(&make_frame(128, TFS))
+            .await
+            .unwrap();
         for _ in 0..20 {
-            capture_write.write_all(&make_frame(128, TFS)).await.unwrap();
+            capture_write
+                .write_all(&make_frame(128, TFS))
+                .await
+                .unwrap();
         }
         drop(capture_write);
 
@@ -882,6 +911,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::int_plus_one)]
     async fn test_pipeline_marker_injection() {
         let marker_count = 5;
         let (msg_tx, msg_rx) = mpsc::channel(16);
@@ -904,7 +934,10 @@ mod tests {
             .await
         });
 
-        capture_write.write_all(&make_frame(128, TFS)).await.unwrap();
+        capture_write
+            .write_all(&make_frame(128, TFS))
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         msg_tx
@@ -987,7 +1020,10 @@ mod tests {
 
         for i in 0..10u8 {
             let val = if i % 2 == 0 { 0 } else { 255 };
-            capture_write.write_all(&make_frame(val, TFS)).await.unwrap();
+            capture_write
+                .write_all(&make_frame(val, TFS))
+                .await
+                .unwrap();
         }
 
         drop(capture_write);
