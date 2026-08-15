@@ -1,2 +1,4 @@
+# CPU feature note: upstream forced `+avx2` here, which SIGILLs on pre-AVX2
+# CPUs (e.g. Ivy Bridge). The SIMD code (std::simd) is portable and retargets
+# automatically, so no forced feature is needed.
 [build]
-rustflags = ["-C", "target-feature=+avx2"]
