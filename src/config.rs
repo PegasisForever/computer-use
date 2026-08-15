@@ -92,7 +92,7 @@ pub struct CliValues {
 }
 
 /// Fully resolved runtime configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Config {
     pub transport: Transport,
     pub host: String,

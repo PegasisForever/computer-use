@@ -75,14 +75,19 @@ pub fn build_router(config: &Config) -> axum::Router {
 /// Build the rmcp Streamable HTTP service (stateful, per-session factory).
 ///
 /// The service factory is invoked once per MCP session, giving each session a
-/// fresh `ComputerUseServer` with its own recording handle.
+/// fresh `ComputerUseServer` with its own recording handle. The factory uses
+/// `ComputerUseServer::filtered(config)` so the tool allow/deny list applies
+/// over HTTP exactly as it does over stdio.
 pub fn build_mcp_service(
     config: &Config,
 ) -> StreamableHttpService<ComputerUseServer, LocalSessionManager> {
     let session_manager = Arc::new(LocalSessionManager::default());
     let rmcp_config = rmcp_config(config);
+    let config = config.clone();
     StreamableHttpService::new(
-        || Ok(ComputerUseServer::new()),
+        move || {
+            ComputerUseServer::filtered(&config).map_err(|e| std::io::Error::other(e.to_string()))
+        },
         session_manager,
         rmcp_config,
     )

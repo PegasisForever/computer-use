@@ -94,11 +94,10 @@ pub struct ComputerUseServer {
 
 #[tool_router]
 impl ComputerUseServer {
+    /// Create a server with no tool filtering (all tools enabled).
+    #[allow(dead_code)] // public convenience ctor; binary paths use `filtered`
     pub fn new() -> Self {
-        Self {
-            tool_router: Self::tool_router(),
-            recording: Arc::new(Mutex::new(None)),
-        }
+        Self::filtered(&Config::default()).expect("default config applies no tool filter")
     }
 
     /// Build a server with the tool allow/deny filter applied.
