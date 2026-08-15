@@ -2,6 +2,7 @@
 
 mod cli;
 mod config;
+mod guard;
 mod keyboard;
 mod mouse;
 mod recording;
@@ -87,6 +88,16 @@ async fn main() -> Result<()> {
         config_path = ?config.config_path,
         "configuration"
     );
+
+    if config.transport == Transport::Http {
+        guard::validate_bind(
+            config.auth_key.as_deref().unwrap_or_default(),
+            &config.host,
+            config.tls_cert.as_deref().and_then(|p| p.to_str()),
+            config.allow_insecure_remote,
+        )
+        .map_err(anyhow::Error::msg)?;
+    }
 
     let server = ComputerUseServer::new();
     let service = server.serve(stdio()).await?;
