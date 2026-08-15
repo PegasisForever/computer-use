@@ -1,5 +1,6 @@
 #![feature(portable_simd)]
 
+mod cli;
 mod config;
 mod keyboard;
 mod mouse;
@@ -8,6 +9,7 @@ mod screenshot;
 mod server;
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use config::*;
 use rmcp::{ServiceExt, transport::stdio};
 use server::ComputerUseServer;
@@ -54,6 +56,11 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    let cli = cli::Cli::parse();
+    if let Some(cli::Command::Auth { cmd }) = &cli.command {
+        return cli::run_auth(cmd);
+    }
+
     check_resolution().await?;
 
     tracing::info!(
@@ -62,6 +69,23 @@ async fn main() -> Result<()> {
         DISPLAY_HEIGHT,
         SCALED_WIDTH,
         SCALED_HEIGHT
+    );
+
+    let config = Config::load(&cli)?;
+    tracing::info!(
+        transport = ?config.transport,
+        host = %config.host,
+        port = config.port,
+        auth_enabled = config.auth_key.is_some(),
+        ip_allowlist = %config.ip_allowlist.join(","),
+        cors_origins = %config.cors_origins.join(","),
+        tool_allow = %config.tool_allow.join(","),
+        tool_deny = %config.tool_deny.join(","),
+        tls_cert = ?config.tls_cert,
+        tls_key = ?config.tls_key,
+        allow_insecure_remote = config.allow_insecure_remote,
+        config_path = ?config.config_path,
+        "configuration"
     );
 
     let server = ComputerUseServer::new();
