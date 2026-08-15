@@ -36,10 +36,17 @@ pub async fn serve(
 }
 
 /// Serve plain HTTP with `axum::serve`. Shared by both feature states.
+///
+/// `into_make_service_with_connect_info::<SocketAddr>` populates the
+/// `ConnectInfo<SocketAddr>` request extension the IP allowlist middleware
+/// reads the peer from; without it every request fails closed with 403.
 async fn serve_plain(addr: SocketAddr, router: Router) -> Result<()> {
-    axum::serve(TcpListener::bind(addr).await?, router)
-        .await
-        .map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))
+    axum::serve(
+        TcpListener::bind(addr).await?,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))
 }
 
 /// Serve HTTPS with axum-server's rustls acceptor.
@@ -51,7 +58,7 @@ async fn serve_plain(addr: SocketAddr, router: Router) -> Result<()> {
 async fn serve_tls(addr: SocketAddr, router: Router, cert: PathBuf, key: PathBuf) -> Result<()> {
     let config = load_tls_config(&cert, &key)?;
     axum_server::bind_rustls(addr, RustlsConfig::from_config(std::sync::Arc::new(config)))
-        .serve(router.into_make_service())
+        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .map_err(|e| anyhow::anyhow!("TLS server error: {e}"))
 }
