@@ -1,13 +1,20 @@
 #![feature(portable_simd)]
 
+mod auth;
+mod cli;
 mod config;
+mod filter;
+mod guard;
+mod http;
 mod keyboard;
 mod mouse;
 mod recording;
 mod screenshot;
 mod server;
+mod tls;
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use config::*;
 use rmcp::{ServiceExt, transport::stdio};
 use server::ComputerUseServer;
@@ -54,6 +61,11 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    let cli = cli::Cli::parse();
+    if let Some(cli::Command::Auth { cmd }) = &cli.command {
+        return cli::run_auth(cmd);
+    }
+
     check_resolution().await?;
 
     tracing::info!(
@@ -64,9 +76,43 @@ async fn main() -> Result<()> {
         SCALED_HEIGHT
     );
 
-    let server = ComputerUseServer::new();
-    let service = server.serve(stdio()).await?;
-    service.waiting().await?;
+    let config = Config::load(&cli)?;
+    tracing::info!(
+        transport = ?config.transport,
+        host = %config.host,
+        port = config.port,
+        auth_enabled = config.auth_key.is_some(),
+        ip_allowlist = %config.ip_allowlist.join(","),
+        cors_origins = %config.cors_origins.join(","),
+        tool_allow = %config.tool_allow.join(","),
+        tool_deny = %config.tool_deny.join(","),
+        tls_cert = ?config.tls_cert,
+        tls_key = ?config.tls_key,
+        allow_insecure_remote = config.allow_insecure_remote,
+        config_path = ?config.config_path,
+        "configuration"
+    );
+
+    if config.transport == Transport::Http {
+        guard::validate_bind(
+            config.auth_key.as_deref().unwrap_or_default(),
+            &config.host,
+            config.tls_cert.as_deref().and_then(|p| p.to_str()),
+            config.allow_insecure_remote,
+        )
+        .map_err(anyhow::Error::msg)?;
+    }
+
+    match config.transport {
+        Transport::Stdio => {
+            let server = ComputerUseServer::filtered(&config)?;
+            let service = server.serve(stdio()).await?;
+            service.waiting().await?;
+        }
+        Transport::Http => {
+            http::serve(config).await?;
+        }
+    }
 
     Ok(())
 }

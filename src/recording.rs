@@ -235,6 +235,9 @@ fn build_marker_svg(width: u32, height: u32, title: &str, description: &str) -> 
 /// Render a marker frame: white 1080p frame with title and description text.
 /// Uses resvg to rasterize an SVG with the text laid out.
 /// Returns raw RGB24 bytes (width × height × 3).
+// Upstream clippy: `chunks_exact(4)` is clearer here than `as_chunks` for the
+// manual RGB24 flattening; lint left in place.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn generate_marker_frame(width: u32, height: u32, title: &str, description: &str) -> Vec<u8> {
     let rgb_size = (width * height * 3) as usize;
     let white_fallback = || vec![255u8; rgb_size];
@@ -285,6 +288,10 @@ pub enum RecordingMessage {
 /// signals via `msg_rx`.
 ///
 /// Generic over AsyncRead/AsyncWrite so tests can substitute in-memory streams.
+// Upstream clippy: 8 pipeline parameters are inherent to the generic pipeline
+// design, and the reader loop reads naturally as `loop` + `match`. Left in
+// place (pre-existing).
+#[allow(clippy::too_many_arguments, clippy::while_let_loop)]
 pub async fn run_pipeline(
     capture: impl AsyncRead + Unpin + Send + 'static,
     mut encoder: impl AsyncWrite + Unpin + Send,
@@ -549,6 +556,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn test_slightly_different_frames_below_threshold() {
         let a = make_frame(128, 10000);
         let mut b = a.clone();
@@ -882,6 +890,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::int_plus_one)]
     async fn test_pipeline_marker_injection() {
         let marker_count = 5;
         let (msg_tx, msg_rx) = mpsc::channel(16);

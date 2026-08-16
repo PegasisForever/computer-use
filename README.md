@@ -8,7 +8,7 @@ Communicates over stdio using the [MCP protocol](https://modelcontextprotocol.io
 
 - Linux with X11 at 1920x1080 resolution
 - `xdotool` and `ffmpeg` installed
-- CPU with AVX2 support
+- CPU with at least SSE2 (AVX2 optional — the SIMD recording path retargets automatically; no forced feature)
 
 ## Tools
 
@@ -53,6 +53,85 @@ chmod +x ~/.local/bin/computer-use
 ```
 
 3. Restart Claude Code. The computer use tools will be available automatically.
+
+## Remote access & authentication
+
+By default the server talks over stdio, exactly as before. To serve over HTTP instead, pass `--transport http`:
+
+```bash
+computer-use --transport http
+```
+
+This starts a Streamable HTTP server (via axum) for use from another machine or an HTTP-capable MCP client. Generate an auth key with `auth gen-key`, then start the server with it:
+
+```bash
+computer-use auth gen-key
+computer-use --transport http --auth-key 'your-generated-key'
+```
+
+Clients send the key in the `Authorization: Bearer` header. Never put it in the URL.
+
+Startup rules:
+
+- Loopback binds work without an auth key.
+- A non-loopback bind requires an auth key AND either TLS or `--allow-insecure-remote`.
+
+TLS is optional, behind a cargo feature `tls` off by default; build with `cargo +nightly build --release --features tls`.
+
+See [SECURITY.md](SECURITY.md) for the full threat model.
+
+### CLI flags
+
+| Flag | Description |
+|---|---|
+| `--transport stdio\|http` | Transport mode. Default `stdio`. |
+| `--host` | Address to bind. |
+| `--port` | Port to listen on. |
+| `--auth-key` | Bearer token required from clients. |
+| `--ip-allowlist` | Comma-separated CIDRs allowed to connect. Empty allows all. |
+| `--cors-origins` | Comma-separated allowed origins for CORS. |
+| `--allow-tools` | Comma-separated tool allow list. |
+| `--block-tools` | Comma-separated tool deny list. |
+| `--tls-cert` | TLS certificate file (requires the `tls` feature). |
+| `--tls-key` | TLS private key file (requires the `tls` feature). |
+| `--allow-insecure-remote` | Allow non-loopback binds without TLS. |
+| `--config <path>` | Path to a config.toml file (HTTP mode only). |
+
+### Environment variables
+
+Every flag has a `COMPUTER_USE_*` environment variable. Precedence: CLI flags > environment variables > `config.toml` > defaults.
+
+| Variable | Equivalent flag |
+|---|---|
+| `COMPUTER_USE_AUTH_KEY` | `--auth-key` |
+| `COMPUTER_USE_IP_ALLOWLIST` | `--ip-allowlist` |
+| `COMPUTER_USE_CORS_ORIGINS` | `--cors-origins` |
+| `COMPUTER_USE_TOOL_ALLOW` | `--allow-tools` |
+| `COMPUTER_USE_TOOL_DENY` | `--block-tools` |
+| `COMPUTER_USE_LISTEN_ADDR` | `--host` and `--port` |
+| `COMPUTER_USE_TLS_CERT` | `--tls-cert` |
+| `COMPUTER_USE_TLS_KEY` | `--tls-key` |
+| `COMPUTER_USE_ALLOW_INSECURE_REMOTE` | `--allow-insecure-remote` |
+
+### config.toml
+
+A config file is optional and read only in HTTP mode. Example:
+
+```toml
+[auth]
+token = "your-token"
+
+[http]
+bind = "127.0.0.1:3000"
+
+[http.tls]
+cert = "/path/to/cert.pem"
+key = "/path/to/key.pem"
+```
+
+### Security posture
+
+The server ships with a documented threat model covering three attacker classes: browser-based DNS rebinding, local or LAN peers, and compromised agents. Defenses include loopback-only default binds, Origin and Host validation, Bearer authentication, an optional IP allowlist, and tool allow and deny lists enforced on both transports. The honest line: this authenticates the channel; a compromised agent can still type passwords and click destructive buttons. Read [SECURITY.md](SECURITY.md) for details.
 
 ## Testing locally with MCP Inspector
 

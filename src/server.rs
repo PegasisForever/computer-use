@@ -1,4 +1,5 @@
 use crate::config::*;
+use crate::filter;
 use crate::{keyboard, mouse, recording, screenshot};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -39,7 +40,9 @@ pub struct ScrollParams {
     pub x: Option<f64>,
     #[schemars(description = "Y coordinate in 1456x819 space")]
     pub y: Option<f64>,
-    #[schemars(description = "Scroll amount in notches (one unit = one scroll wheel notch). Positive scrolls down, negative scrolls up, must be between -5 and 5")]
+    #[schemars(
+        description = "Scroll amount in notches (one unit = one scroll wheel notch). Positive scrolls down, negative scrolls up, must be between -5 and 5"
+    )]
     pub amount: i32,
 }
 
@@ -91,16 +94,31 @@ pub struct ComputerUseServer {
 
 #[tool_router]
 impl ComputerUseServer {
+    /// Create a server with no tool filtering (all tools enabled).
+    #[allow(dead_code)] // public convenience ctor; binary paths use `filtered`
     pub fn new() -> Self {
-        Self {
-            tool_router: Self::tool_router(),
+        Self::filtered(&Config::default()).expect("default config applies no tool filter")
+    }
+
+    /// Build a server with the tool allow/deny filter applied.
+    ///
+    /// Denied tools are hidden from `tools/list` and rejected by `tools/call`
+    /// on the stdio transport, because the filtered router is the one the
+    /// `#[tool_handler]` reads via `self.tool_router`.
+    pub fn filtered(config: &Config) -> anyhow::Result<Self> {
+        let mut router = Self::tool_router();
+        filter::apply_filter(&mut router, config)?;
+        Ok(Self {
+            tool_router: router,
             recording: Arc::new(Mutex::new(None)),
-        }
+        })
     }
 
     // --- Mouse & Keyboard Actions ---
 
-    #[tool(description = "Left click. Multi-screenshot flow: press down, capture pressed state, release, capture loading state, wait, capture loaded state. Returns 3 screenshots. Optionally move to (x, y) first.")]
+    #[tool(
+        description = "Left click. Multi-screenshot flow: press down, capture pressed state, release, capture loading state, wait, capture loaded state. Returns 3 screenshots. Optionally move to (x, y) first."
+    )]
     async fn left_click(
         &self,
         Parameters(params): Parameters<ClickParams>,
@@ -124,7 +142,9 @@ impl ComputerUseServer {
         Ok(CallToolResult::success(vec![ss1, ss2, ss3]))
     }
 
-    #[tool(description = "Double-click the left mouse button. Optionally move to (x, y) first. Returns a screenshot.")]
+    #[tool(
+        description = "Double-click the left mouse button. Optionally move to (x, y) first. Returns a screenshot."
+    )]
     async fn left_double_click(
         &self,
         Parameters(params): Parameters<ClickParams>,
@@ -138,7 +158,9 @@ impl ComputerUseServer {
         Ok(CallToolResult::success(vec![ss]))
     }
 
-    #[tool(description = "Click the right mouse button. Optionally move to (x, y) first. Returns a screenshot.")]
+    #[tool(
+        description = "Click the right mouse button. Optionally move to (x, y) first. Returns a screenshot."
+    )]
     async fn right_click(
         &self,
         Parameters(params): Parameters<ClickParams>,
@@ -152,7 +174,9 @@ impl ComputerUseServer {
         Ok(CallToolResult::success(vec![ss]))
     }
 
-    #[tool(description = "Click the middle mouse button. Optionally move to (x, y) first. Returns a screenshot.")]
+    #[tool(
+        description = "Click the middle mouse button. Optionally move to (x, y) first. Returns a screenshot."
+    )]
     async fn middle_click(
         &self,
         Parameters(params): Parameters<ClickParams>,
@@ -166,7 +190,9 @@ impl ComputerUseServer {
         Ok(CallToolResult::success(vec![ss]))
     }
 
-    #[tool(description = "Smoothly move the mouse to (x, y) using ease-in-out interpolation. Returns a screenshot.")]
+    #[tool(
+        description = "Smoothly move the mouse to (x, y) using ease-in-out interpolation. Returns a screenshot."
+    )]
     async fn mouse_move(
         &self,
         Parameters(params): Parameters<MouseMoveParams>,
@@ -179,7 +205,9 @@ impl ComputerUseServer {
         Ok(CallToolResult::success(vec![ss]))
     }
 
-    #[tool(description = "Scroll at the current or specified position. Positive amount scrolls down, negative scrolls up. Optionally move to (x, y) first. Returns a screenshot.")]
+    #[tool(
+        description = "Scroll at the current or specified position. Positive amount scrolls down, negative scrolls up. Optionally move to (x, y) first. Returns a screenshot."
+    )]
     async fn scroll(
         &self,
         Parameters(params): Parameters<ScrollParams>,
@@ -205,27 +233,28 @@ impl ComputerUseServer {
         Ok(CallToolResult::success(vec![ss]))
     }
 
-    #[tool(description = "Press a key or key combination (e.g. ctrl+c, Return, alt+Tab). Returns a screenshot.")]
+    #[tool(
+        description = "Press a key or key combination (e.g. ctrl+c, Return, alt+Tab). Returns a screenshot."
+    )]
     async fn key(
         &self,
         Parameters(params): Parameters<KeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        keyboard::key_press(&params.keys)
-            .await
-            .map_err(mcp_err)?;
+        keyboard::key_press(&params.keys).await.map_err(mcp_err)?;
         sleep(Duration::from_secs_f64(ACTION_WAIT_SECS)).await;
         let ss = take_screenshot_content().await?;
         Ok(CallToolResult::success(vec![ss]))
     }
 
-    #[tool(name = "type", description = "Type a string of text on the keyboard. Returns a screenshot.")]
+    #[tool(
+        name = "type",
+        description = "Type a string of text on the keyboard. Returns a screenshot."
+    )]
     async fn type_text(
         &self,
         Parameters(params): Parameters<TypeParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        keyboard::type_text(&params.text)
-            .await
-            .map_err(mcp_err)?;
+        keyboard::type_text(&params.text).await.map_err(mcp_err)?;
         sleep(Duration::from_secs_f64(ACTION_WAIT_SECS)).await;
         let ss = take_screenshot_content().await?;
         Ok(CallToolResult::success(vec![ss]))
@@ -254,9 +283,9 @@ impl ComputerUseServer {
     #[tool(description = "Stop the current recording and return the output file path.")]
     async fn stop_recording(&self) -> Result<CallToolResult, ErrorData> {
         let mut guard = self.recording.lock().await;
-        let handle = guard.take().ok_or_else(|| {
-            ErrorData::invalid_request("No recording in progress", None)
-        })?;
+        let handle = guard
+            .take()
+            .ok_or_else(|| ErrorData::invalid_request("No recording in progress", None))?;
         drop(guard);
 
         let path = handle.stop().await.map_err(mcp_err)?;
@@ -266,15 +295,17 @@ impl ComputerUseServer {
         ))]))
     }
 
-    #[tool(description = "Insert a marker scene into the current recording: a white frame with title and description text, displayed for 3 seconds.")]
+    #[tool(
+        description = "Insert a marker scene into the current recording: a white frame with title and description text, displayed for 3 seconds."
+    )]
     async fn add_recording_marker(
         &self,
         Parameters(params): Parameters<MarkerParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let guard = self.recording.lock().await;
-        let handle = guard.as_ref().ok_or_else(|| {
-            ErrorData::invalid_request("No recording in progress", None)
-        })?;
+        let handle = guard
+            .as_ref()
+            .ok_or_else(|| ErrorData::invalid_request("No recording in progress", None))?;
         handle
             .add_marker(params.title, params.description)
             .await
@@ -285,7 +316,7 @@ impl ComputerUseServer {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for ComputerUseServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
